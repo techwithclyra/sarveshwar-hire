@@ -3,7 +3,7 @@ import { FileText, Sparkles, Play, Loader2, AlertTriangle, Check, X, ThumbsUp, T
 import { COLORS } from "../config/colors.js";
 import { DB } from "../lib/db.js";
 import { fetchProblems } from "../lib/problems.js";
-import { evaluateWithClaude } from "../lib/evaluate.js";
+import { evaluatePrompt } from "../lib/evaluate.js";
 import { runInWorker, outputsMatch, outputsMatchExact } from "../lib/sandbox.js";
 import { gradeFor, gradeTone, fmtDate } from "../lib/util.js";
 import { CountdownTimer } from "./CountdownTimer.jsx";
@@ -341,7 +341,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     const currentPrompt = promptRef.current;
     const activeSec = Math.round(elapsedSec(candidate.id, timerKeyId));
     try {
-      const ev = await evaluateWithClaude(currentPrompt, problem);
+      const ev = await evaluatePrompt(currentPrompt, problem, candidate.id);
       setGenCode(ev.code); setRubric(ev.rubric); setStatus("Running real test cases…");
       const results = [];
       for (const tc of problem.testCases) {

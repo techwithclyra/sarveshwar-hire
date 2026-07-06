@@ -6,10 +6,13 @@ import { supabaseAdmin } from "./supabaseClient.js";
 
 const PORT = process.env.PORT || 3001;
 // Trim whitespace and strip any surrounding quotes — a stray newline or a
-// value written as GEMINI_API_KEY="AIza..." in .env is a common cause of
-// Google returning "invalid authentication credentials".
-const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim().replace(/^['"]|['"]$/g, "");
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// value written as OPENROUTER_API_KEY="sk-or-..." in .env is a common cause
+// of OpenRouter returning "No auth credentials found".
+// This is a server-wide fallback key. Students can instead paste their own
+// OpenRouter key in the app (see the banner) — theirs is sent per-request
+// and takes priority over this one, so this var is optional.
+const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY || "").trim().replace(/^['"]|['"]$/g, "");
+const MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
 const app = express();
@@ -28,8 +31,10 @@ function extractJson(raw) {
 }
 
 // Candidate storage now lives in Supabase (see ../supabase-migration.sql
-// and frontend/src/lib/db.js) — this backend only proxies the Gemini
-// call so the API key never reaches the browser.
+// and frontend/src/lib/db.js) — this backend only proxies the OpenRouter
+// call so a server-wide API key never reaches the browser. A student-supplied
+// OpenRouter key (see /api/evaluate) is used for that one request only and
+// is never persisted here.
 
 // Same prototype-grade trust model as the rest of the app (client-side
 // admin password gate) — the Admin Panel sends the admin password back as
@@ -164,18 +169,23 @@ function asStringArray(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluation proxy — the browser never sees the Gemini API key. The problem
-// definition is looked up server-side too, so a candidate can't tamper with
-// test cases or ideal traits via devtools. The prompt score is computed and
-// validated HERE, deterministically, from the model's per-criterion judgments.
+// Evaluation proxy — the browser never sees the server's own OpenRouter key.
+// A student may instead send their own OpenRouter key (apiKey) from the
+// banner in the UI; it's forwarded to OpenRouter for this request only and
+// is never stored server-side. The problem definition is looked up
+// server-side too, so a candidate can't tamper with test cases or ideal
+// traits via devtools. The prompt score is computed and validated HERE,
+// deterministically, from the model's per-criterion judgments.
 // ---------------------------------------------------------------------------
 app.post("/api/evaluate", async (req, res) => {
-  const { prompt, problemId } = req.body || {};
+  const { prompt, problemId, apiKey } = req.body || {};
   const problem = await getProblemById(problemId);
   if (typeof prompt !== "string" || !prompt.trim() || !problem) {
     return res.status(400).json({ error: "prompt and a valid problemId are required" });
   }
-  if (!GEMINI_API_KEY) return res.status(500).json({ error: "Server is missing GEMINI_API_KEY (set it in backend/.env)" });
+  const studentKey = (typeof apiKey === "string" ? apiKey : "").trim();
+  const effectiveKey = studentKey || OPENROUTER_API_KEY;
+  if (!effectiveKey) return res.status(500).json({ error: "No OpenRouter API key available — add your own OpenRouter API key using the banner at the top of the page." });
 
   const traits = (problem.idealTraits || []).map((t, i) => `${i + 1}. ${t}`).join("\n") || "(none specified)";
   const criteria = RUBRIC.map((c, i) => `${i + 1}. ${c.key} — ${c.hint} (score 0 = absent, 1 = partial, 2 = fully present)`).join("\n");
@@ -218,40 +228,43 @@ Reply with ONLY minified JSON, no fences, EXACTLY this shape:
 Keep code compact.`;
 
   try {
-    const upstream = await fetch(
-      // Pass the key as the canonical ?key= query parameter (the form Google's
-      // Generative Language API documents for API-key auth). Sending it only as
-      // a header makes some Google frontends treat the call as unauthenticated
-      // and reply "Expected OAuth 2 access token…".
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: sys }] }],
-          // temperature 0 → deterministic, reproducible scoring for identical
-          // submissions; thinkingBudget 0 keeps latency/cost down.
-          generationConfig: { temperature: 0, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
-        }),
-      }
-    );
-    // Gemini can return a non-JSON error page (e.g. a 5xx from the edge) —
+    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${effectiveKey}`,
+        // Optional but recommended by OpenRouter for attributing usage.
+        "HTTP-Referer": process.env.ALLOWED_ORIGIN || "http://localhost:3001",
+        "X-Title": "Sarveshwar Hire",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: "user", content: sys }],
+        // temperature 0 → deterministic, reproducible scoring for identical submissions.
+        temperature: 0,
+        max_tokens: 4096,
+      }),
+    });
+    // OpenRouter can return a non-JSON error page (e.g. a 5xx from the edge) —
     // read it defensively so we never blow up with a raw JSON parse error.
     let data;
     try { data = await upstream.json(); }
-    catch (e) { return res.status(502).json({ error: `Gemini returned a non-JSON response (HTTP ${upstream.status})` }); }
+    catch (e) { return res.status(502).json({ error: `OpenRouter returned a non-JSON response (HTTP ${upstream.status})` }); }
     if (!upstream.ok) {
-      const gMsg = data?.error?.message || "Gemini API error";
-      // Turn Google's cryptic auth/enablement errors into an actionable message.
-      if (upstream.status === 401 || upstream.status === 403 || /API key|credential|OAuth|permission|SERVICE_DISABLED|API .*not been used|has not been used/i.test(gMsg)) {
+      const orMsg = data?.error?.message || "OpenRouter API error";
+      // Turn OpenRouter's auth/credit errors into an actionable message.
+      if (upstream.status === 401 || upstream.status === 403 || /auth|credential|API key|permission/i.test(orMsg)) {
         return res.status(502).json({
-          error: "The server's GEMINI_API_KEY was rejected by Google. Create a key at https://aistudio.google.com/apikey, make sure the \"Generative Language API\" is enabled for that project, and set GEMINI_API_KEY (no quotes) in backend/.env. [Google said: " + gMsg + "]",
+          error: (studentKey
+            ? "Your OpenRouter API key was rejected. Check the key you added in the banner at https://openrouter.ai/keys."
+            : "The server's OPENROUTER_API_KEY was rejected. Create a key at https://openrouter.ai/keys and set OPENROUTER_API_KEY (no quotes) in backend/.env, or add your own key using the banner in the app."
+          ) + " [OpenRouter said: " + orMsg + "]",
         });
       }
-      return res.status(upstream.status).json({ error: gMsg });
+      return res.status(upstream.status).json({ error: orMsg });
     }
-    const raw = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").replace(/```json/g, "").replace(/```/g, "").trim();
-    if (!raw) throw new Error("Empty response from Gemini");
+    const raw = (data.choices?.[0]?.message?.content || "").replace(/```json/g, "").replace(/```/g, "").trim();
+    if (!raw) throw new Error("Empty response from OpenRouter");
     const parsed = extractJson(raw);
     if (!parsed.code || typeof parsed.code !== "string") throw new Error("Malformed evaluation response (no code)");
     if (!Array.isArray(parsed.rubric)) throw new Error("Malformed evaluation response (no rubric)");

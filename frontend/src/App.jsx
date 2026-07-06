@@ -4,6 +4,7 @@ import { COLORS, FONT_IMPORT } from "./config/colors.js";
 import { AuthGate } from "./components/AuthGate.jsx";
 import { CandidateWorkspace } from "./components/CandidateWorkspace.jsx";
 import { StudentHistory } from "./components/StudentHistory.jsx";
+import { OpenRouterBanner } from "./components/OpenRouterBanner.jsx";
 import { supabase } from "./lib/supabaseClient.js";
 
 // Lazy-loaded: the Admin Panel pulls in exceljs for bulk import/export,
@@ -56,6 +57,8 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {(view === "workspace" || view === "history") && <OpenRouterBanner candidate={candidate} />}
 
       <main style={{ flex: 1, padding: 24, minHeight: 0, overflow: "hidden" }}>
         {view === "admin" && (
