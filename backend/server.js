@@ -5,7 +5,10 @@ import { listStudents, createStudent, updateStudent, deleteStudent, verifyLogin,
 import { supabaseAdmin } from "./supabaseClient.js";
 
 const PORT = process.env.PORT || 3001;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+// Trim whitespace and strip any surrounding quotes — a stray newline or a
+// value written as GEMINI_API_KEY="AIza..." in .env is a common cause of
+// Google returning "invalid authentication credentials".
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim().replace(/^['"]|['"]$/g, "");
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
@@ -216,10 +219,14 @@ Keep code compact.`;
 
   try {
     const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
+      // Pass the key as the canonical ?key= query parameter (the form Google's
+      // Generative Language API documents for API-key auth). Sending it only as
+      // a header makes some Google frontends treat the call as unauthenticated
+      // and reply "Expected OAuth 2 access token…".
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: sys }] }],
           // temperature 0 → deterministic, reproducible scoring for identical
@@ -233,7 +240,16 @@ Keep code compact.`;
     let data;
     try { data = await upstream.json(); }
     catch (e) { return res.status(502).json({ error: `Gemini returned a non-JSON response (HTTP ${upstream.status})` }); }
-    if (!upstream.ok) return res.status(upstream.status).json({ error: data?.error?.message || "Gemini API error" });
+    if (!upstream.ok) {
+      const gMsg = data?.error?.message || "Gemini API error";
+      // Turn Google's cryptic auth/enablement errors into an actionable message.
+      if (upstream.status === 401 || upstream.status === 403 || /API key|credential|OAuth|permission|SERVICE_DISABLED|API .*not been used|has not been used/i.test(gMsg)) {
+        return res.status(502).json({
+          error: "The server's GEMINI_API_KEY was rejected by Google. Create a key at https://aistudio.google.com/apikey, make sure the \"Generative Language API\" is enabled for that project, and set GEMINI_API_KEY (no quotes) in backend/.env. [Google said: " + gMsg + "]",
+        });
+      }
+      return res.status(upstream.status).json({ error: gMsg });
+    }
     const raw = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").replace(/```json/g, "").replace(/```/g, "").trim();
     if (!raw) throw new Error("Empty response from Gemini");
     const parsed = extractJson(raw);

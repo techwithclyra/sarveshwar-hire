@@ -49,6 +49,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const [remainingSec, setRemainingSec] = useState(null);
   const [advanceMessage, setAdvanceMessage] = useState("");
   const [paused, setPaused] = useState(false);
+  const [timeUp, setTimeUp] = useState(false);
 
   const promptRef = useRef(prompt);
   const startedAtRef = useRef(null);
@@ -58,6 +59,14 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const instanceRef = useRef(null);
   const pausedRef = useRef(false);
   const candidateRef = useRef(candidate);
+  const timeUpRef = useRef(false);
+  // Ensures the timeout auto-submit fires exactly ONCE per attempt — without
+  // this, a failed auto-submit (e.g. the API errors) leaves rem<=0 and the
+  // countdown retries every second, hammering the API and trapping the student.
+  const autoSubmittedRef = useRef(false);
+  // Guards against a double-advance when a manual "Next" click races the
+  // automatic advance timer — only the first advance for a given problem wins.
+  const advancedRef = useRef(false);
 
   useEffect(() => {
     Promise.all([fetchProblems(), DB.listAssignments()])
@@ -105,6 +114,8 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     setPaused(wasPaused); pausedRef.current = wasPaused;
     setLocked(false); setLastAttempt(null); setAdvanceMessage("");
     setGenCode(""); setRubric(null); setTestResults([]); setScores(null); setError(""); setStatus("");
+    setTimeUp(false); timeUpRef.current = false; autoSubmittedRef.current = false;
+    advancedRef.current = false;
     busyRef.current = false;
 
     // Always (re)write the full resumable entry to the DB, so the timer start,
@@ -162,6 +173,8 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
       setRemainingSec(null);
       setPaused(false); pausedRef.current = false;
       setGenCode(""); setRubric(null); setTestResults([]); setScores(null); setError(""); setStatus("");
+      setTimeUp(false); timeUpRef.current = false; autoSubmittedRef.current = false;
+      advancedRef.current = false;
       busyRef.current = false;
       return;
     }
@@ -195,7 +208,10 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidate?.id]);
 
-  // Countdown tick — auto-submits the instant it reaches zero.
+  // Countdown tick — when it reaches zero the attempt is over: flip into the
+  // "time's up" state and fire ONE final auto-submit (only if there's a prompt
+  // to grade). The autoSubmittedRef guard means a failed auto-submit never
+  // retries — the student always gets a working "Next Problem" button instead.
   useEffect(() => {
     if (!instance || locked) return;
     const limitSec = instance.assignment.timeLimitMinutes * 60;
@@ -203,7 +219,14 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
       // elapsedSec excludes paused time, so a paused countdown holds steady.
       const rem = Math.max(0, limitSec - elapsedSec(candidate.id, timerKeyRef.current));
       setRemainingSec(rem);
-      if (rem <= 0 && !busyRef.current && !lockedRef.current && !pausedRef.current) runEvaluation("auto");
+      if (rem > 0 || pausedRef.current || lockedRef.current) return;
+      if (!timeUpRef.current) { timeUpRef.current = true; setTimeUp(true); }
+      if (!autoSubmittedRef.current && !busyRef.current) {
+        autoSubmittedRef.current = true;
+        // Only auto-grade if they actually wrote something; an empty prompt at
+        // timeout is handled as an unsolved timeout via the Next button.
+        if (promptRef.current.trim()) runEvaluation("auto");
+      }
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -221,7 +244,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     const passed = scores.codeCorrectnessScore === 100;
     if (!passed && remaining > 0) return;
     setAdvanceMessage(passed ? "Correct! Moving to the next problem…" : "No attempts remaining — moving to the next problem…");
-    const t = setTimeout(() => setInstanceIdx((i) => i + 1), 2500);
+    const t = setTimeout(() => goNext(), 2500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores]);
@@ -244,45 +267,64 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   }
 
   // Advance to the next problem in the (stable) sequence. Used by the manual
-  // "Next Problem" buttons and after a skip.
+  // "Next Problem" buttons, after a skip, and by the auto-advance timer. The
+  // guard makes concurrent callers (manual click + auto timer) advance once.
   function goNext() {
+    if (advancedRef.current) return;
+    advancedRef.current = true;
     setInstanceIdx((i) => i + 1);
   }
 
-  // "I don't know this one" — skip to the next problem WITHOUT running an
-  // evaluation. We still record a per-problem result (score 0, marked skipped)
-  // so the admin gets an individual entry for every assigned problem rather
-  // than a silent gap. Linear flow: there's no coming back to it.
-  function skipProblem() {
+  // Record an unsolved per-problem result (score 0) and advance. Shared by the
+  // manual "Skip" and the timeout path, so the admin always gets an individual
+  // entry for every assigned problem instead of a silent gap. Linear flow:
+  // there's no coming back to it.
+  function finalizeUnsolved(submissionType, feedbackMsg) {
     const inst = instanceRef.current;
-    if (busyRef.current || lockedRef.current || !inst) return;
-    if (!window.confirm("Skip this problem? It will be recorded as unsolved (score 0) and you won't be able to return to it.")) return;
+    const candidateNow = candidateRef.current;
+    if (!inst || !candidateNow) return;
     const { problem, assignment } = inst;
     const timerKeyId = timerKeyRef.current;
     const startedAt = startedAtRef.current;
     const currentPrompt = promptRef.current;
     const submittedAt = Date.now();
-    const timeTakenSec = timerKeyId ? Math.round(elapsedSec(candidate.id, timerKeyId)) : 0;
+    const timeTakenSec = timerKeyId ? Math.round(elapsedSec(candidateNow.id, timerKeyId)) : 0;
     const timeRemainingSec = Math.max(0, Math.round(assignment.timeLimitMinutes * 60 - timeTakenSec));
 
     const attempt = {
       problemId: problem.id, assignmentId: assignment.id, title: problem.title,
       overall: 0, grade: gradeFor(0), promptScore: 0, codingScore: 0, promptQualityScore: 0,
       passed: 0, total: (problem.testCases || []).length, at: submittedAt, startedAt, submittedAt,
-      timeTakenSec, timeRemainingSec, submissionType: "skipped",
-      prompt: currentPrompt, code: "", feedback: "Skipped by the candidate — recorded as unsolved.",
+      timeTakenSec, timeRemainingSec, submissionType,
+      prompt: currentPrompt, code: "", feedback: feedbackMsg,
       strengths: [], weaknesses: [], suggestions: [], rubric: [],
     };
     const updated = {
-      ...candidate,
-      attempts: [...(candidate.attempts || []), attempt],
-      inProgress: (candidate.inProgress || []).filter((ip) => ip.problemId !== problem.id),
+      ...candidateNow,
+      attempts: [...(candidateNow.attempts || []), attempt],
+      inProgress: (candidateNow.inProgress || []).filter((ip) => ip.problemId !== problem.id),
     };
     setCandidate(updated);
     DB.saveCandidate(updated);
-    if (timerKeyId) { clearTimer(candidate.id, timerKeyId); clearDraft(candidate.id, timerKeyId); }
+    if (timerKeyId) { clearTimer(candidateNow.id, timerKeyId); clearDraft(candidateNow.id, timerKeyId); }
     setPaused(false); pausedRef.current = false;
     goNext();
+  }
+
+  // "I don't know this one" — skip WITHOUT running an evaluation.
+  function skipProblem() {
+    if (busyRef.current || lockedRef.current || !instanceRef.current) return;
+    if (!window.confirm("Skip this problem? It will be recorded as unsolved (score 0) and you won't be able to return to it.")) return;
+    finalizeUnsolved("skipped", "Skipped by the candidate — recorded as unsolved.");
+  }
+
+  // "Next Problem" from the time's-up screen. If a final auto-submission
+  // already scored this attempt, just advance; otherwise record it as an
+  // unsolved timeout so the admin still gets a per-problem entry.
+  function nextAfterTimeout() {
+    if (busyRef.current) return; // an auto-submit is still in flight
+    if (scores) goNext();
+    else finalizeUnsolved("auto", "Time expired before a successful submission — recorded as unsolved.");
   }
 
   async function runEvaluation(submissionType = "manual") {
@@ -411,12 +453,13 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
             <CountdownTimer remainingSec={remainingSec} totalSec={assignment.timeLimitMinutes * 60} paused={paused} />
           </div>
           <button
-            onClick={togglePause} disabled={running}
+            onClick={togglePause} disabled={running || timeUp}
             title={paused ? "Resume the countdown" : "Pause the countdown and lock the editor"}
             style={{
               display: "flex", alignItems: "center", gap: 7, background: paused ? COLORS.teal : COLORS.panelAlt,
               color: paused ? "#04211C" : COLORS.text, border: `1px solid ${paused ? COLORS.teal : COLORS.border}`,
-              borderRadius: 10, padding: "0 18px", fontSize: 13, fontWeight: 700, cursor: running ? "not-allowed" : "pointer",
+              borderRadius: 10, padding: "0 18px", fontSize: 13, fontWeight: 700, cursor: running || timeUp ? "not-allowed" : "pointer",
+              opacity: timeUp ? 0.5 : 1,
             }}
           >
             {paused ? <><PlayCircle size={15} />Resume</> : <><Pause size={15} />Pause</>}
@@ -478,6 +521,30 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                 >
                   <PlayCircle size={15} />Resume
                 </button>
+              </div>
+            ) : timeUp ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: COLORS.muted, textAlign: "center", gap: 10 }}>
+                <AlertTriangle size={22} color={COLORS.rose} />
+                <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text }}>Time's up for this problem</div>
+                {running ? (
+                  <div style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Loader2 size={14} className="ph-spin" />{status || "Submitting your final prompt…"}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12.5, maxWidth: 320, lineHeight: 1.5 }}>
+                      {scores
+                        ? "Your final prompt was graded — see the results on the right."
+                        : "The time limit was reached. This problem will be recorded as unsolved."}
+                    </div>
+                    <button
+                      onClick={nextAfterTimeout}
+                      style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.teal, color: "#04211C", border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Next Problem<ArrowRight size={15} />
+                    </button>
+                  </>
+                )}
               </div>
             ) : (
               <>
