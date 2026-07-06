@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { FileText, Sparkles, Play, Loader2, AlertTriangle, Check, X, ThumbsUp, ThumbsDown, Lightbulb, ListChecks, Lock, RotateCcw, PartyPopper, ArrowRight } from "lucide-react";
+import { FileText, Sparkles, Play, Loader2, AlertTriangle, Check, X, ThumbsUp, ThumbsDown, Lightbulb, ListChecks, Lock, RotateCcw, PartyPopper, ArrowRight, Pause, PlayCircle } from "lucide-react";
 import { COLORS } from "../config/colors.js";
 import { DB } from "../lib/db.js";
 import { fetchProblems } from "../lib/problems.js";
@@ -7,19 +7,24 @@ import { evaluateWithClaude } from "../lib/evaluate.js";
 import { runInWorker, outputsMatch, outputsMatchExact } from "../lib/sandbox.js";
 import { gradeFor, gradeTone, fmtDate } from "../lib/util.js";
 import { CountdownTimer } from "./CountdownTimer.jsx";
-import { getOrStartTimer, clearTimer, loadDraft, saveDraft, clearDraft, formatClock } from "../lib/timer.js";
+import { getOrStartTimer, getTimerState, seedTimerState, seedDraft, clearTimer, loadDraft, saveDraft, clearDraft, formatClock, elapsedSec, pauseTimer, resumeTimer, isPaused } from "../lib/timer.js";
 import { resolveAssignedInstances } from "../lib/assignments.js";
 import { Pill, ScoreRing, label, inputStyle } from "./ui.jsx";
 
-// Used only for the deterministic "Prompt Completeness" component of the
-// score (10% weight) — a rough proxy for how much detail was actually
-// written, independent of the AI's own holistic 40% judgment.
-const COMPLETENESS_LENGTH_TARGET = 150;
-
-function shuffled(arr) {
+// Deterministic per-student shuffle: each candidate still gets a randomized
+// problem order, but the SAME order every time they log in — so logging out
+// and back in resumes the same sequence instead of reshuffling underneath them.
+function hashString(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function seededShuffle(arr, seedStr) {
   const a = [...arr];
+  let seed = hashString(seedStr || "seed") || 1;
+  const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
@@ -43,6 +48,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const [lastAttempt, setLastAttempt] = useState(null);
   const [remainingSec, setRemainingSec] = useState(null);
   const [advanceMessage, setAdvanceMessage] = useState("");
+  const [paused, setPaused] = useState(false);
 
   const promptRef = useRef(prompt);
   const startedAtRef = useRef(null);
@@ -50,6 +56,8 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const busyRef = useRef(false);
   const lockedRef = useRef(false);
   const instanceRef = useRef(null);
+  const pausedRef = useRef(false);
+  const candidateRef = useRef(candidate);
 
   useEffect(() => {
     Promise.all([fetchProblems(), DB.listAssignments()])
@@ -60,13 +68,15 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const student = candidate.student || candidate;
   // Resolved once per session and shuffled, so problems appear in random
   // order and stay in that order as the student advances through them.
-  const instances = useMemo(() => shuffled(resolveAssignedInstances(assignments, problems, student)), [assignments, problems, student]);
+  const instances = useMemo(() => seededShuffle(resolveAssignedInstances(assignments, problems, student), student.id || student.email || ""), [assignments, problems, student]);
   const instance = instances[instanceIdx];
   const done = loaded && instances.length > 0 && instanceIdx >= instances.length;
 
   useEffect(() => { promptRef.current = prompt; }, [prompt]);
   useEffect(() => { lockedRef.current = locked; }, [locked]);
   useEffect(() => { instanceRef.current = instance; }, [instance]);
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
+  useEffect(() => { candidateRef.current = candidate; }, [candidate]);
 
   function beginAttempt(inst, candidateNow) {
     const { problem, assignment } = inst;
@@ -75,24 +85,67 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     const timerKeyId = `${problem.id}__a${attemptIndex}`;
     timerKeyRef.current = timerKeyId;
 
+    // Cross-session resume: after a logout/login (or on another device) the
+    // localStorage timer + draft are gone. Seed them from the in-progress
+    // record we persisted to the DB, so the candidate lands exactly where they
+    // left off — same remaining time, same pause state, same draft prompt.
+    const dbEntry = (candidateNow.inProgress || []).find((ip) => ip.problemId === problem.id && ip.attemptIndex === attemptIndex);
+    if (dbEntry) {
+      seedTimerState(candidateNow.id, timerKeyId, { startedAt: dbEntry.startedAt, pausedAt: dbEntry.pausedAt, pausedMs: dbEntry.pausedMs });
+      if (typeof dbEntry.draft === "string") seedDraft(candidateNow.id, timerKeyId, dbEntry.draft);
+    }
+
     const startedAt = getOrStartTimer(candidateNow.id, timerKeyId);
     startedAtRef.current = startedAt;
     const draft = loadDraft(candidateNow.id, timerKeyId);
     setPrompt(typeof draft === "string" ? draft : "");
-    setRemainingSec(Math.max(0, assignment.timeLimitMinutes * 60 - (Date.now() - startedAt) / 1000));
+    setRemainingSec(Math.max(0, assignment.timeLimitMinutes * 60 - elapsedSec(candidateNow.id, timerKeyId)));
+    // Restore the paused state too, so a refresh (or re-login) mid-pause stays paused.
+    const wasPaused = isPaused(candidateNow.id, timerKeyId);
+    setPaused(wasPaused); pausedRef.current = wasPaused;
     setLocked(false); setLastAttempt(null); setAdvanceMessage("");
     setGenCode(""); setRubric(null); setTestResults([]); setScores(null); setError(""); setStatus("");
     busyRef.current = false;
 
-    const already = (candidateNow.inProgress || []).some((ip) => ip.problemId === problem.id && ip.attemptIndex === attemptIndex);
-    if (!already) {
-      const updated = {
-        ...candidateNow,
-        inProgress: [...(candidateNow.inProgress || []).filter((ip) => ip.problemId !== problem.id), { problemId: problem.id, assignmentId: assignment.id, attemptIndex, startedAt }],
-      };
-      setCandidate(updated);
-      DB.saveCandidate(updated);
-    }
+    // Always (re)write the full resumable entry to the DB, so the timer start,
+    // pause state, and draft are recoverable from any device — not just this
+    // browser's localStorage.
+    const updated = writeProgressToCandidate(candidateNow, { problem, assignment, attemptIndex, timerKeyId, draft: typeof draft === "string" ? draft : "" });
+    setCandidate(updated);
+    DB.saveCandidate(updated);
+  }
+
+  // Build a candidate object whose inProgress carries the full resumable state
+  // for the given attempt (timer start, accumulated pause, current pause flag,
+  // and the draft prompt). Pure — callers decide when to setCandidate/save.
+  function writeProgressToCandidate(candidateNow, { problem, assignment, attemptIndex, timerKeyId, draft }) {
+    const ts = getTimerState(candidateNow.id, timerKeyId) || {};
+    const entry = {
+      problemId: problem.id, assignmentId: assignment.id, attemptIndex,
+      startedAt: ts.startedAt ?? startedAtRef.current,
+      pausedAt: ts.pausedAt ?? null, pausedMs: ts.pausedMs || 0, paused: !!ts.pausedAt,
+      draft: typeof draft === "string" ? draft : promptRef.current,
+      updatedAt: Date.now(),
+    };
+    return {
+      ...candidateNow,
+      inProgress: [...(candidateNow.inProgress || []).filter((ip) => ip.problemId !== problem.id), entry],
+    };
+  }
+
+  // Persist the current attempt's resumable state (timer + pause + draft) to
+  // the DB. Called on pause/resume, on a slow autosave tick, and on tab close.
+  function persistProgress(draftOverride) {
+    const inst = instanceRef.current;
+    const candidateNow = candidateRef.current;
+    if (!inst || lockedRef.current || !timerKeyRef.current || !candidateNow) return;
+    const { problem, assignment } = inst;
+    const attemptIndex = (candidateNow.attempts || []).filter((a) => a.problemId === problem.id).length;
+    const draft = typeof draftOverride === "string" ? draftOverride : promptRef.current;
+    saveDraft(candidateNow.id, timerKeyRef.current, draft); // keep localStorage fresh too
+    const updated = writeProgressToCandidate(candidateNow, { problem, assignment, attemptIndex, timerKeyId: timerKeyRef.current, draft });
+    setCandidate(updated);
+    DB.saveCandidate(updated);
   }
 
   // Switching problems: either lock into the summary of a fully-used
@@ -107,6 +160,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
       setLastAttempt(priorAttempts[priorAttempts.length - 1]);
       setPrompt("");
       setRemainingSec(null);
+      setPaused(false); pausedRef.current = false;
       setGenCode(""); setRubric(null); setTestResults([]); setScores(null); setError(""); setStatus("");
       busyRef.current = false;
       return;
@@ -116,22 +170,40 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   }, [instance?.problem?.id, candidate?.id]);
 
   // Auto-save the draft at regular intervals so a refresh doesn't lose work.
+  // localStorage every 5s (cheap, same-browser resilience); the DB every 20s
+  // (so a logout/login on any device can restore the draft + timer + pause).
   useEffect(() => {
     if (!instance || locked) return;
+    let ticks = 0;
     const id = setInterval(() => {
-      if (timerKeyRef.current) saveDraft(candidate.id, timerKeyRef.current, promptRef.current);
+      if (!timerKeyRef.current) return;
+      saveDraft(candidate.id, timerKeyRef.current, promptRef.current);
+      if (++ticks % 4 === 0 && !pausedRef.current) persistProgress();
     }, 5000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance?.problem?.id, locked, candidate?.id]);
+
+  // Persist the resumable state when the tab is closed or the page is hidden
+  // (e.g. the candidate closes the browser to come back later on another
+  // device) — best-effort, so we don't lose the last few seconds of work.
+  useEffect(() => {
+    const flush = () => { if (!lockedRef.current) persistProgress(); };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("visibilitychange", flush);
+    return () => { window.removeEventListener("pagehide", flush); window.removeEventListener("visibilitychange", flush); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate?.id]);
 
   // Countdown tick — auto-submits the instant it reaches zero.
   useEffect(() => {
     if (!instance || locked) return;
     const limitSec = instance.assignment.timeLimitMinutes * 60;
     const tick = () => {
-      const rem = Math.max(0, limitSec - (Date.now() - startedAtRef.current) / 1000);
+      // elapsedSec excludes paused time, so a paused countdown holds steady.
+      const rem = Math.max(0, limitSec - elapsedSec(candidate.id, timerKeyRef.current));
       setRemainingSec(rem);
-      if (rem <= 0 && !busyRef.current && !lockedRef.current) runEvaluation("auto");
+      if (rem <= 0 && !busyRef.current && !lockedRef.current && !pausedRef.current) runEvaluation("auto");
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -154,19 +226,39 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scores]);
 
+  // Pause freezes the countdown and locks the editor; resume continues with
+  // the same time remaining. Disabled while an evaluation is running.
+  function togglePause() {
+    if (!timerKeyRef.current || locked || running) return;
+    if (pausedRef.current) {
+      resumeTimer(candidate.id, timerKeyRef.current);
+      setPaused(false); pausedRef.current = false;
+    } else {
+      saveDraft(candidate.id, timerKeyRef.current, promptRef.current); // don't lose the in-flight prompt
+      pauseTimer(candidate.id, timerKeyRef.current);
+      setPaused(true); pausedRef.current = true;
+    }
+    // Persist the new pause state + draft to the DB so the candidate can log
+    // out here and resume — still paused, same time left — from any device.
+    persistProgress();
+  }
+
   async function runEvaluation(submissionType = "manual") {
     const inst = instanceRef.current;
     if (busyRef.current || lockedRef.current || !inst) return;
     const { problem, assignment } = inst;
     busyRef.current = true;
+    // Submitting ends any pause — the countdown state is cleared below anyway.
+    if (pausedRef.current) { resumeTimer(candidate.id, timerKeyRef.current); setPaused(false); pausedRef.current = false; }
     setRunning(true); setError(""); setGenCode(""); setRubric(null); setTestResults([]); setScores(null);
     setStatus("Generating a solution from your prompt…");
     const startedAt = startedAtRef.current;
     const timerKeyId = timerKeyRef.current;
     const currentPrompt = promptRef.current;
+    const activeSec = Math.round(elapsedSec(candidate.id, timerKeyId));
     try {
       const ev = await evaluateWithClaude(currentPrompt, problem);
-      setGenCode(ev.code); setRubric(ev.promptRubric); setStatus("Running real test cases…");
+      setGenCode(ev.code); setRubric(ev.rubric); setStatus("Running real test cases…");
       const results = [];
       for (const tc of problem.testCases) {
         const r = await runInWorker(ev.code, tc.input, 2500);
@@ -180,32 +272,37 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
       const exactMatches = results.filter((r) => r.exact).length;
       const total = results.length;
 
-      const promptEngineeringScore = Math.round((ev.promptRubric.filter((x) => x.met).length / ev.promptRubric.length) * 100);
-      const promptCompletenessScore = Math.min(100, Math.round((currentPrompt.trim().length / COMPLETENESS_LENGTH_TARGET) * 100));
+      // The PROMPT score is computed and validated server-side from a fixed,
+      // weighted 6-criterion rubric (Goal / Context / Constraints / Output
+      // Format / Examples / Success Criteria) — the client just consumes it.
+      const promptQualityScore = ev.promptScore;
       const codeCorrectnessScore = total ? Math.round((passedCount / total) * 100) : 0;
       const outputAccuracyScore = total ? Math.round((exactMatches / total) * 100) : 0;
       const codeEfficiencyScore = ev.efficiencyScore;
 
-      // Displayed as two headline numbers (Prompt Score / Coding Score), each
-      // a normalized rollup of the weighted criteria that belong to it, plus
-      // the full 5-criteria weighted Overall Score used for the official grade.
-      const promptScore = Math.round((promptEngineeringScore * 40 + promptCompletenessScore * 10) / 50);
-      const codingScore = Math.round((codeCorrectnessScore * 25 + codeEfficiencyScore * 15 + outputAccuracyScore * 10) / 50);
+      // Prompt-dominant scoring: the candidate's PROMPT drives 70% of the grade;
+      // the generated code's behaviour is the remaining 30% (correctness 18% +
+      // efficiency 7% + output accuracy 5%). The two headline numbers (Prompt
+      // Score / Coding Score) are each a normalized rollup of their group.
+      const promptScore = promptQualityScore;
+      const codingScore = Math.round((codeCorrectnessScore * 18 + codeEfficiencyScore * 7 + outputAccuracyScore * 5) / 30);
       const overall = Math.round(
-        promptEngineeringScore * 0.4 + codeCorrectnessScore * 0.25 + codeEfficiencyScore * 0.15 +
-        promptCompletenessScore * 0.1 + outputAccuracyScore * 0.1
+        promptQualityScore * 0.70 +
+        codeCorrectnessScore * 0.18 + codeEfficiencyScore * 0.07 + outputAccuracyScore * 0.05
       );
       const grade = gradeFor(overall);
 
       const submittedAt = Date.now();
       const timeLimitSec = assignment.timeLimitMinutes * 60;
-      const timeTakenSec = Math.round((submittedAt - startedAt) / 1000);
+      // Active time only — paused stretches don't count against the candidate.
+      const timeTakenSec = activeSec;
       const timeRemainingSec = Math.max(0, Math.round(timeLimitSec - timeTakenSec));
 
       setScores({
         promptScore, codingScore, overall, grade, passed: passedCount, total,
-        promptEngineeringScore, promptCompletenessScore, codeCorrectnessScore, codeEfficiencyScore, outputAccuracyScore,
+        promptQualityScore, codeCorrectnessScore, codeEfficiencyScore, outputAccuracyScore, efficiencyNote: ev.efficiencyNote,
         feedback: ev.feedback, strengths: ev.strengths, weaknesses: ev.weaknesses, suggestions: ev.suggestions,
+        injectionDetected: ev.injectionDetected, injectionNote: ev.injectionNote,
         submissionType, startedAt, submittedAt, timeTakenSec, timeRemainingSec,
       });
       setStatus("");
@@ -216,7 +313,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
         problemId: problem.id, assignmentId: assignment.id, title: problem.title, overall, grade, promptScore, codingScore,
         passed: passedCount, total, at: submittedAt, startedAt, submittedAt, timeTakenSec, timeRemainingSec, submissionType,
         prompt: currentPrompt, code: ev.code, feedback: ev.feedback, strengths: ev.strengths, weaknesses: ev.weaknesses,
-        suggestions: ev.suggestions, rubric: ev.promptRubric,
+        suggestions: ev.suggestions, rubric: ev.rubric, promptQualityScore, injectionDetected: ev.injectionDetected,
       };
       const updated = {
         ...candidate,
@@ -267,7 +364,22 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {!locked && remainingSec != null && (
-        <CountdownTimer remainingSec={remainingSec} totalSec={assignment.timeLimitMinutes * 60} />
+        <div style={{ display: "flex", gap: 12, alignItems: "stretch", marginBottom: 16 }}>
+          <div style={{ flex: 1 }}>
+            <CountdownTimer remainingSec={remainingSec} totalSec={assignment.timeLimitMinutes * 60} paused={paused} />
+          </div>
+          <button
+            onClick={togglePause} disabled={running}
+            title={paused ? "Resume the countdown" : "Pause the countdown and lock the editor"}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: paused ? COLORS.teal : COLORS.panelAlt,
+              color: paused ? "#04211C" : COLORS.text, border: `1px solid ${paused ? COLORS.teal : COLORS.border}`,
+              borderRadius: 10, padding: "0 18px", fontSize: 13, fontWeight: 700, cursor: running ? "not-allowed" : "pointer",
+            }}
+          >
+            {paused ? <><PlayCircle size={15} />Resume</> : <><Pause size={15} />Pause</>}
+          </button>
+        </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 16, flex: 1, minHeight: 0 }} className="ph-grid">
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -306,6 +418,17 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                     : "No attempts remaining for this problem."}
                 </div>
               </div>
+            ) : paused ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: COLORS.muted, textAlign: "center", gap: 10 }}>
+                <Pause size={22} color={COLORS.gold} />
+                <div style={{ fontSize: 13 }}>Paused — the countdown is frozen and your prompt is saved. You can safely log out and resume this problem later (from any device) right where you left off.</div>
+                <button
+                  onClick={togglePause}
+                  style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.teal, color: "#04211C", border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                >
+                  <PlayCircle size={15} />Resume
+                </button>
+              </div>
             ) : (
               <>
                 <textarea
@@ -340,6 +463,15 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                   {scores?.feedback && <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 6, lineHeight: 1.5 }}>{scores.feedback}</div>}
                 </div>
               </div>
+              {scores?.injectionDetected && (
+                <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start", background: "rgba(232,96,122,0.12)", border: `1px solid ${COLORS.rose}`, borderRadius: 8, padding: 10, fontSize: 12, color: COLORS.text }}>
+                  <AlertTriangle size={14} color={COLORS.rose} style={{ marginTop: 1, flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, color: COLORS.rose }}>Prompt-injection attempt ignored</div>
+                    <div style={{ color: COLORS.muted, marginTop: 2 }}>Instructions aimed at the grader were treated as data and did not affect your score.{scores.injectionNote ? ` (${scores.injectionNote})` : ""}</div>
+                  </div>
+                </div>
+              )}
               <div style={{ marginTop: 14, display: "grid", gap: 4, fontSize: 11, color: COLORS.muted, fontFamily: "'JetBrains Mono', monospace" }}>
                 <div>Started {fmtDate(summary.startedAt)} · Submitted {fmtDate(summary.submittedAt)}</div>
                 <div>
@@ -403,7 +535,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
 
           {scores?.weaknesses?.length > 0 && (
             <div>
-              <div style={label(COLORS.rose)}>{scores.promptEngineeringScore < 60 ? "Why This Prompt Is Weak" : "Weaknesses"}</div>
+              <div style={label(COLORS.rose)}>{scores.promptQualityScore < 60 ? "Why This Prompt Is Weak" : "Weaknesses"}</div>
               <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
                 {scores.weaknesses.map((w, i) => (
                   <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: COLORS.text }}>
@@ -429,17 +561,25 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
 
           {rubric && (
             <div>
-              <div style={label()}>Prompt Engineering Breakdown</div>
+              <div style={label()}>Prompt Rubric · {summary?.promptScore ?? scores?.promptScore}/100</div>
               <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-                {rubric.map((r, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 10 }}>
-                    {r.met ? <Check size={14} color={COLORS.teal} style={{ marginTop: 2, flexShrink: 0 }} /> : <X size={14} color={COLORS.rose} style={{ marginTop: 2, flexShrink: 0 }} />}
-                    <div>
-                      <div style={{ fontSize: 12.5 }}>{r.criterion}</div>
-                      {r.note && <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 2 }}>{r.note}</div>}
+                {rubric.map((r, i) => {
+                  const max = r.maxScore ?? 2;
+                  const tone = r.score >= max ? COLORS.teal : r.score > 0 ? COLORS.gold : COLORS.rose;
+                  const Icon = r.score >= max ? Check : r.score > 0 ? AlertTriangle : X;
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 10 }}>
+                      <Icon size={14} color={tone} style={{ marginTop: 2, flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
+                          <span>{r.criterion}{r.weight != null ? <span style={{ color: COLORS.muted }}> · {r.weight}%</span> : null}</span>
+                          <span style={{ color: tone, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>{r.score}/{max}</span>
+                        </div>
+                        {(r.evidence || r.note) && <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 2, lineHeight: 1.5 }}>{r.evidence || r.note}</div>}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

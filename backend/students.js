@@ -59,6 +59,23 @@ export async function deleteStudent(id) {
   if (error) throw new Error(error.message);
 }
 
+export async function getStudentByEmail(email) {
+  if (!supabaseAdmin) throw new Error("Supabase service role is not configured (set SUPABASE_SERVICE_ROLE_KEY in backend/.env)");
+  const { data, error } = await supabaseAdmin.from("students").select("*").eq("email", email).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? mapRow(data) : null;
+}
+
+// Google-authenticated students have no password of their own — we store a
+// random hash so the NOT NULL column is satisfied, but they only ever sign in
+// through Google. Their username is their email, matching self-serve signup.
+export async function upsertGoogleStudent({ email, name, college, department }) {
+  const existing = await getStudentByEmail(email);
+  if (existing) return existing;
+  const randomSecret = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return createStudent({ name, email, college, department, batch: "", username: email, password: randomSecret });
+}
+
 export async function verifyLogin(username, password) {
   if (!supabaseAdmin) throw new Error("Supabase service role is not configured (set SUPABASE_SERVICE_ROLE_KEY in backend/.env)");
   const { data, error } = await supabaseAdmin.from("students").select("*").eq("username", username).maybeSingle();

@@ -1,9 +1,10 @@
 import React, { useState, Suspense, lazy } from "react";
 import { Terminal, Lock, ArrowLeft, LogOut, Loader2, History } from "lucide-react";
 import { COLORS, FONT_IMPORT } from "./config/colors.js";
-import { StudentIntake } from "./components/StudentIntake.jsx";
+import { AuthGate } from "./components/AuthGate.jsx";
 import { CandidateWorkspace } from "./components/CandidateWorkspace.jsx";
 import { StudentHistory } from "./components/StudentHistory.jsx";
+import { supabase } from "./lib/supabaseClient.js";
 
 // Lazy-loaded: the Admin Panel pulls in exceljs for bulk import/export,
 // which roughly triples the JS bundle. Splitting it out means students
@@ -44,7 +45,7 @@ export default function App() {
                 </button>
               )}
               {(view === "workspace" || view === "history") && (
-                <button onClick={() => { setCandidate(null); setView("intake"); }} style={navBtnStyle}>
+                <button onClick={() => { supabase?.auth.signOut(); setCandidate(null); setView("intake"); }} style={navBtnStyle}>
                   <LogOut size={13} />Log out
                 </button>
               )}
@@ -62,7 +63,7 @@ export default function App() {
             <AdminPanel />
           </Suspense>
         )}
-        {view === "intake" && <StudentIntake onStart={(c) => { setCandidate(c); setView("workspace"); }} />}
+        {view === "intake" && <AuthGate onStart={(c) => { setCandidate(c); setView("workspace"); }} />}
         {view === "workspace" && candidate && <CandidateWorkspace candidate={candidate} setCandidate={setCandidate} />}
         {view === "history" && candidate && <StudentHistory candidate={candidate} />}
       </main>
