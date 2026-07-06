@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { FileText, Sparkles, Play, Loader2, AlertTriangle, Check, X, ThumbsUp, ThumbsDown, Lightbulb, ListChecks, Lock, RotateCcw, PartyPopper, ArrowRight, Pause, PlayCircle } from "lucide-react";
+import { FileText, Sparkles, Play, Loader2, AlertTriangle, Check, X, ThumbsUp, ThumbsDown, Lightbulb, ListChecks, Lock, RotateCcw, PartyPopper, ArrowRight, Pause, PlayCircle, SkipForward } from "lucide-react";
 import { COLORS } from "../config/colors.js";
 import { DB } from "../lib/db.js";
 import { fetchProblems } from "../lib/problems.js";
@@ -243,6 +243,48 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     persistProgress();
   }
 
+  // Advance to the next problem in the (stable) sequence. Used by the manual
+  // "Next Problem" buttons and after a skip.
+  function goNext() {
+    setInstanceIdx((i) => i + 1);
+  }
+
+  // "I don't know this one" — skip to the next problem WITHOUT running an
+  // evaluation. We still record a per-problem result (score 0, marked skipped)
+  // so the admin gets an individual entry for every assigned problem rather
+  // than a silent gap. Linear flow: there's no coming back to it.
+  function skipProblem() {
+    const inst = instanceRef.current;
+    if (busyRef.current || lockedRef.current || !inst) return;
+    if (!window.confirm("Skip this problem? It will be recorded as unsolved (score 0) and you won't be able to return to it.")) return;
+    const { problem, assignment } = inst;
+    const timerKeyId = timerKeyRef.current;
+    const startedAt = startedAtRef.current;
+    const currentPrompt = promptRef.current;
+    const submittedAt = Date.now();
+    const timeTakenSec = timerKeyId ? Math.round(elapsedSec(candidate.id, timerKeyId)) : 0;
+    const timeRemainingSec = Math.max(0, Math.round(assignment.timeLimitMinutes * 60 - timeTakenSec));
+
+    const attempt = {
+      problemId: problem.id, assignmentId: assignment.id, title: problem.title,
+      overall: 0, grade: gradeFor(0), promptScore: 0, codingScore: 0, promptQualityScore: 0,
+      passed: 0, total: (problem.testCases || []).length, at: submittedAt, startedAt, submittedAt,
+      timeTakenSec, timeRemainingSec, submissionType: "skipped",
+      prompt: currentPrompt, code: "", feedback: "Skipped by the candidate — recorded as unsolved.",
+      strengths: [], weaknesses: [], suggestions: [], rubric: [],
+    };
+    const updated = {
+      ...candidate,
+      attempts: [...(candidate.attempts || []), attempt],
+      inProgress: (candidate.inProgress || []).filter((ip) => ip.problemId !== problem.id),
+    };
+    setCandidate(updated);
+    DB.saveCandidate(updated);
+    if (timerKeyId) { clearTimer(candidate.id, timerKeyId); clearDraft(candidate.id, timerKeyId); }
+    setPaused(false); pausedRef.current = false;
+    goNext();
+  }
+
   async function runEvaluation(submissionType = "manual") {
     const inst = instanceRef.current;
     if (busyRef.current || lockedRef.current || !inst) return;
@@ -417,6 +459,14 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                     ? "Submitted — this assignment doesn't allow revisiting previous submissions."
                     : "No attempts remaining for this problem."}
                 </div>
+                {instanceIdx < instances.length && (
+                  <button
+                    onClick={goNext}
+                    style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.teal, color: "#04211C", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginTop: 4 }}
+                  >
+                    Next Problem<ArrowRight size={15} />
+                  </button>
+                )}
               </div>
             ) : paused ? (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: COLORS.muted, textAlign: "center", gap: 10 }}>
@@ -436,13 +486,22 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                   placeholder="Instruct the AI how to solve this. Assign it a role, state the goal, give context, name constraints and edge cases, and specify the exact output format. The more precisely you write this, the more correct the generated code will be."
                   style={{ flex: 1, resize: "none", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14, color: COLORS.text, fontFamily: "'JetBrains Mono', monospace", fontSize: 13, lineHeight: 1.6, outline: "none" }}
                 />
-                <button
-                  onClick={() => runEvaluation("manual")} disabled={running || !prompt.trim()}
-                  style={{ marginTop: 12, alignSelf: "flex-end", display: "flex", alignItems: "center", gap: 8, background: running || !prompt.trim() ? COLORS.panelAlt : COLORS.teal, color: running || !prompt.trim() ? COLORS.muted : "#04211C", border: "none", borderRadius: 8, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: running || !prompt.trim() ? "not-allowed" : "pointer" }}
-                >
-                  {running ? <Loader2 size={16} className="ph-spin" /> : <Play size={16} />}
-                  {running ? (status || "Evaluating…") : "Run Evaluation"}
-                </button>
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <button
+                    onClick={skipProblem} disabled={running}
+                    title="Don't know this one? Skip it and move to the next problem (recorded as unsolved)."
+                    style={{ display: "flex", alignItems: "center", gap: 7, background: "transparent", color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: running ? "not-allowed" : "pointer" }}
+                  >
+                    <SkipForward size={15} />Skip / Next
+                  </button>
+                  <button
+                    onClick={() => runEvaluation("manual")} disabled={running || !prompt.trim()}
+                    style={{ display: "flex", alignItems: "center", gap: 8, background: running || !prompt.trim() ? COLORS.panelAlt : COLORS.teal, color: running || !prompt.trim() ? COLORS.muted : "#04211C", border: "none", borderRadius: 8, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: running || !prompt.trim() ? "not-allowed" : "pointer" }}
+                  >
+                    {running ? <Loader2 size={16} className="ph-spin" /> : <Play size={16} />}
+                    {running ? (status || "Evaluating…") : "Run Evaluation"}
+                  </button>
+                </div>
                 {error && <div style={{ color: COLORS.rose, fontSize: 12.5, marginTop: 10, display: "flex", gap: 6 }}><AlertTriangle size={13} style={{ marginTop: 1 }} />{error}</div>}
               </>
             )}
@@ -477,7 +536,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                 <div>
                   Time taken {formatClock(summary.timeTakenSec)}
                   {summary.timeRemainingSec != null ? ` · ${formatClock(summary.timeRemainingSec)} remaining` : ""}
-                  {" · "}{summary.submissionType === "auto" ? "Auto-submitted after timeout" : "Manual submission"}
+                  {" · "}{summary.submissionType === "auto" ? "Auto-submitted after timeout" : summary.submissionType === "skipped" ? "Skipped (unsolved)" : "Manual submission"}
                 </div>
               </div>
               {advanceMessage && (
@@ -486,16 +545,24 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                 </div>
               )}
               {scores && !advanceMessage && (
-                attemptsRemaining > 0 ? (
-                  <button
-                    onClick={() => beginAttempt(instance, candidate)}
-                    style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 6, background: COLORS.panelAlt, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, cursor: "pointer" }}
-                  >
-                    <RotateCcw size={13} />Try Again ({attemptsRemaining} attempt{attemptsRemaining === 1 ? "" : "s"} left)
-                  </button>
-                ) : (
-                  <div style={{ marginTop: 12, fontSize: 11.5, color: COLORS.muted }}>No attempts remaining for this problem.</div>
-                )
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {attemptsRemaining > 0 && (
+                    <button
+                      onClick={() => beginAttempt(instance, candidate)}
+                      style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.panelAlt, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, cursor: "pointer" }}
+                    >
+                      <RotateCcw size={13} />Try Again ({attemptsRemaining} attempt{attemptsRemaining === 1 ? "" : "s"} left)
+                    </button>
+                  )}
+                  {instanceIdx < instances.length && (
+                    <button
+                      onClick={goNext}
+                      style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.teal, color: "#04211C", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Next Problem<ArrowRight size={13} />
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           ) : (

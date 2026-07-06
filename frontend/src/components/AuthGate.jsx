@@ -184,19 +184,6 @@ export function AuthGate({ onStart }) {
               {busy ? <Loader2 size={15} className="ph-spin" /> : mode === "signup" ? <UserPlus size={15} /> : <LogIn size={15} />}
               {busy ? "Please wait…" : mode === "signup" ? "Create Account" : "Log In"}
             </button>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0" }}>
-              <div style={{ flex: 1, height: 1, background: COLORS.border }} />
-              <span style={{ fontSize: 11, color: COLORS.muted }}>OR</span>
-              <div style={{ flex: 1, height: 1, background: COLORS.border }} />
-            </div>
-
-            <button
-              onClick={doGoogle} disabled={busy}
-              style={{ width: "100%", background: "#fff", color: "#1f2937", border: "none", borderRadius: 8, padding: "11px 0", fontSize: 14, fontWeight: 600, cursor: busy ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
-            >
-              <GoogleG />Continue with Google
-            </button>
           </>
         )}
 

@@ -229,7 +229,7 @@ function CandidatesTab() {
                                         <td style={{ padding: "6px", color: COLORS.muted, fontFamily: "'JetBrains Mono', monospace" }}>{a.timeTakenSec != null ? formatClock(a.timeTakenSec) : "—"}</td>
                                         <td style={{ padding: "6px", color: COLORS.muted, fontFamily: "'JetBrains Mono', monospace" }}>{a.timeRemainingSec != null ? formatClock(a.timeRemainingSec) : "—"}</td>
                                         <td style={{ padding: "6px" }}>
-                                          <Pill tone={a.submissionType === "auto" ? "rose" : "teal"}>{a.submissionType === "auto" ? "Auto (timeout)" : "Manual"}</Pill>
+                                          <Pill tone={a.submissionType === "auto" ? "rose" : a.submissionType === "skipped" ? "gold" : "teal"}>{a.submissionType === "auto" ? "Auto (timeout)" : a.submissionType === "skipped" ? "Skipped" : "Manual"}</Pill>
                                         </td>
                                       </tr>
                                       {viewing && (

@@ -27,7 +27,7 @@ export function StudentHistory({ candidate }) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
                 <span style={{ fontSize: 11.5, color: COLORS.muted }}>{fmtDate(a.submittedAt || a.at)}</span>
-                <Pill tone={a.submissionType === "auto" ? "rose" : "teal"}>{a.submissionType === "auto" ? "Auto (timeout)" : "Manual"}</Pill>
+                <Pill tone={a.submissionType === "auto" ? "rose" : a.submissionType === "skipped" ? "gold" : "teal"}>{a.submissionType === "auto" ? "Auto (timeout)" : a.submissionType === "skipped" ? "Skipped" : "Manual"}</Pill>
                 <Pill tone={gradeTone(a.grade)}>Grade {a.grade}</Pill>
                 <div style={{ fontSize: 15, fontWeight: 700 }}>{a.overall}</div>
               </div>
