@@ -47,6 +47,10 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
   const [locked, setLocked] = useState(false);
   const [lastAttempt, setLastAttempt] = useState(null);
   const [remainingSec, setRemainingSec] = useState(null);
+<<<<<<< HEAD
+=======
+  const [advanceMessage, setAdvanceMessage] = useState("");
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
   const [paused, setPaused] = useState(false);
   const [timeUp, setTimeUp] = useState(false);
 
@@ -111,7 +115,11 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     // Restore the paused state too, so a refresh (or re-login) mid-pause stays paused.
     const wasPaused = isPaused(candidateNow.id, timerKeyId);
     setPaused(wasPaused); pausedRef.current = wasPaused;
+<<<<<<< HEAD
     setLocked(false); setLastAttempt(null);
+=======
+    setLocked(false); setLastAttempt(null); setAdvanceMessage("");
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
     setGenCode(""); setRubric(null); setTestResults([]); setScores(null); setError(""); setStatus("");
     setTimeUp(false); timeUpRef.current = false; autoSubmittedRef.current = false;
     advancedRef.current = false;
@@ -233,6 +241,24 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance?.problem?.id, locked]);
 
+<<<<<<< HEAD
+=======
+  // Passing (100% test cases) or running out of attempts both move the
+  // student on automatically — this is a linear, one-at-a-time flow with no
+  // way to navigate backward to a previous problem.
+  useEffect(() => {
+    if (!scores || !instance) return;
+    const priorCount = (candidate.attempts || []).filter((a) => a.problemId === instance.problem.id).length;
+    const remaining = instance.assignment.maxAttempts - priorCount;
+    const passed = scores.codeCorrectnessScore === 100;
+    if (!passed && remaining > 0) return;
+    setAdvanceMessage(passed ? "Correct! Moving to the next problem…" : "No attempts remaining — moving to the next problem…");
+    const t = setTimeout(() => goNext(), 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scores]);
+
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
   // Pause freezes the countdown and locks the editor; resume continues with
   // the same time remaining. Disabled while an evaluation is running.
   function togglePause() {
@@ -371,7 +397,10 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
         promptQualityScore, codeCorrectnessScore, codeEfficiencyScore, outputAccuracyScore, efficiencyNote: ev.efficiencyNote,
         feedback: ev.feedback, strengths: ev.strengths, weaknesses: ev.weaknesses, suggestions: ev.suggestions,
         injectionDetected: ev.injectionDetected, injectionNote: ev.injectionNote,
+<<<<<<< HEAD
         copiedProblemDetected: ev.copiedProblemDetected, copiedProblemNote: ev.copiedProblemNote,
+=======
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
         submissionType, startedAt, submittedAt, timeTakenSec, timeRemainingSec,
       });
       setStatus("");
@@ -383,7 +412,10 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
         passed: passedCount, total, at: submittedAt, startedAt, submittedAt, timeTakenSec, timeRemainingSec, submissionType,
         prompt: currentPrompt, code: ev.code, feedback: ev.feedback, strengths: ev.strengths, weaknesses: ev.weaknesses,
         suggestions: ev.suggestions, rubric: ev.rubric, promptQualityScore, injectionDetected: ev.injectionDetected,
+<<<<<<< HEAD
         copiedProblemDetected: ev.copiedProblemDetected,
+=======
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
       };
       const updated = {
         ...candidate,
@@ -584,6 +616,7 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                   </div>
                 </div>
               )}
+<<<<<<< HEAD
               {scores?.copiedProblemDetected && (
                 <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start", background: "rgba(232,96,122,0.12)", border: `1px solid ${COLORS.rose}`, borderRadius: 8, padding: 10, fontSize: 12, color: COLORS.text }}>
                   <AlertTriangle size={14} color={COLORS.rose} style={{ marginTop: 1, flexShrink: 0 }} />
@@ -593,6 +626,8 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                   </div>
                 </div>
               )}
+=======
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
               <div style={{ marginTop: 14, display: "grid", gap: 4, fontSize: 11, color: COLORS.muted, fontFamily: "'JetBrains Mono', monospace" }}>
                 <div>Started {fmtDate(summary.startedAt)} · Submitted {fmtDate(summary.submittedAt)}</div>
                 <div>
@@ -601,7 +636,16 @@ export function CandidateWorkspace({ candidate, setCandidate }) {
                   {" · "}{summary.submissionType === "auto" ? "Auto-submitted after timeout" : summary.submissionType === "skipped" ? "Skipped (unsolved)" : "Manual submission"}
                 </div>
               </div>
+<<<<<<< HEAD
               {scores && (
+=======
+              {advanceMessage && (
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: COLORS.gold, fontSize: 12.5, fontWeight: 600 }}>
+                  <ArrowRight size={14} />{advanceMessage}
+                </div>
+              )}
+              {scores && !advanceMessage && (
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
                 <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   {attemptsRemaining > 0 && (
                     <button

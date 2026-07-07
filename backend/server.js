@@ -168,6 +168,7 @@ function asStringArray(value) {
   return Array.isArray(value) ? value.filter((x) => typeof x === "string" && x.trim()).map((x) => String(x).trim()) : [];
 }
 
+<<<<<<< HEAD
 // Detects a candidate "prompt" that is substantially the problem statement
 // pasted back verbatim rather than the student's own instructions. The
 // model's rubric judgments can be fooled by this (the statement text already
@@ -191,6 +192,8 @@ function copiedProblemSimilarity(prompt, problem) {
   return jaccardSimilarity(promptWords, problemWords);
 }
 
+=======
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
 // ---------------------------------------------------------------------------
 // Evaluation proxy — the browser never sees the server's own OpenRouter key.
 // A student may instead send their own OpenRouter key (apiKey) from the
@@ -311,6 +314,7 @@ Keep code compact.`;
       return { criterion: def.key, weight: def.weight, score, maxScore: RUBRIC_MAX, evidence, met: score === RUBRIC_MAX };
     });
     // Weights sum to 100, so `earned` is already a 0-100 percentage. Clamp for safety.
+<<<<<<< HEAD
     let promptScore = clampInt(earned, 0, 100, 0);
 
     // A prompt that's mostly the problem statement copied back adds none of
@@ -326,12 +330,18 @@ Keep code compact.`;
       copiedProblemNote = "Large parts of this prompt are copied from the problem statement rather than your own instructions — the score has been reduced.";
       promptScore = Math.min(promptScore, 40);
     }
+=======
+    const promptScore = clampInt(earned, 0, 100, 0);
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
 
     const result = {
       injectionDetected: parsed.injectionDetected === true,
       injectionNote: typeof parsed.injectionNote === "string" ? parsed.injectionNote.trim() : "",
+<<<<<<< HEAD
       copiedProblemDetected,
       copiedProblemNote,
+=======
+>>>>>>> 9d5b004dfd13f3d4fb3a3b01d6e70efc26b0b016
       code: parsed.code,
       rubric,
       rubricMaxScore: RUBRIC_MAX,
