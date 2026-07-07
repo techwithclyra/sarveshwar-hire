@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: sarveshwar-hire-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-4o-mini
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
